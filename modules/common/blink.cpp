@@ -5,6 +5,7 @@
  * blink LED <amount> of times and on/off <duration> ms
  */
 void blink(int amount, int duration) {
+  pinMode(LED, OUTPUT);
   for (byte i = 0; i < amount; ++i) {
     digitalWrite(LED, HIGH); // turn LED on
     delay(duration);
