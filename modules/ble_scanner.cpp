@@ -3,63 +3,117 @@
 
 #include <Arduino.h>
 
+#include <SPIFFS.h>
+
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 
+#include <BluetoothSerial.h>
+
 #include <WiFi.h>
 
 #define uS_TO_S_FACTOR 1000000
+#define INTERVALL 120 // in sec
 
 int scanTime = 10;
 BLEScan* pBLEScan;
 
-volatile int numOfDevices = 0;
+BluetoothSerial ESP_BT;
+
+static bool keepalive = false;
+uint64_t nextScan = 0;
+bool scanInprogress = false;
+
+const char* LOG = "/bluetooth.txt";
+
+void show_help() {
+  DL("*************************************");
+  DL("h - help");
+  DF("k - toggle keep alive (current: %d)\n", keepalive);
+  DL("s - start scan");
+  DL("l - show log");
+  DL("d - delete log");
+  DL("*************************************");
+  DL();
+}
 
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     void onResult(BLEAdvertisedDevice device) {
-      numOfDevices++;
+      DF("%s | ", device.getAddress().toString().c_str());
 
-      DL("-------------------");
-      DF("  Address: %s\n", device.getAddress().toString().c_str());
-      DF("  RSSI: %d\n", device.getRSSI());
+      DF("RSSI: %d | ", device.getRSSI());
 
       if (device.haveName()) {
-        DF("  Name: %s\n", device.getName().c_str());
+        DF("Name: %s | ", device.getName().c_str());
       }
 
       if (device.haveAppearance()) {
-        DF("  Appearance: %d\n", device.getAppearance());
+        DF("Appearance: %d\n", device.getAppearance());
       }
 
       if (device.haveManufacturerData()) {
         std::string md = device.getManufacturerData();
         uint8_t* mdp = (uint8_t*)device.getManufacturerData().data();
         char *pHex = BLEUtils::buildHexData(nullptr, mdp, md.length());
-        DF("  ManufacturerData: %s\n", pHex);
+        DF("ManufacturerData: %s | ", pHex);
         free(pHex);
       }
 
       if (device.haveServiceUUID()) {
-        DF("  ServiceUUID: %s\n", device.getServiceUUID().toString().c_str());
+        DF("ServiceUUID: %s | ", device.getServiceUUID().toString().c_str());
       }
 
       if (device.haveTXPower()) {
-        DF("  TxPower: %d\n", (int)device.getTXPower());
+        DF("TxPower: %d | ", (int)device.getTXPower());
       }
+      DL();
 
-
-      DF("Advertised Device: %s\n", device.toString().c_str());
-      DL("-------------------");
+      // DF("Advertised Device: %s\n", device.toString().c_str());
     }
 };
+
+void scanCompleted(BLEScanResults foundDevices) {
+  uint16_t num = foundDevices.getCount();
+  DF("Scan completed. %d devices found\n\n", num);
+
+  File log = SPIFFS.open(LOG, FILE_APPEND);
+  if (!log) {
+    DL("***ERROR*** Could not open SPIFFS file to append");
+  }
+
+  if (!log.println(num)) {
+    DL("***ERROR*** Could not append line to SPIFFS file");
+  }
+
+  log.close();
+
+  if (!keepalive) {
+    // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/DeepSleep/TimerWakeUp/TimerWakeUp.ino
+    esp_sleep_enable_timer_wakeup(INTERVALL*uS_TO_S_FACTOR);
+    DF("going to sleep %u seconds\n", INTERVALL);
+    Serial.flush();
+    esp_deep_sleep_start();
+  }
+  scanInprogress = false;
+  uint64_t now = esp_timer_get_time();
+  nextScan = now+INTERVALL*uS_TO_S_FACTOR;
+  // DF("current: %llu, next: %llu\n", now, nextScan);
+}
 
 void setup() {
   blink();
   WiFi.mode(WIFI_OFF);
   Serial.begin(115200);
-  DL("\n\nScanning...");
+  DL("\n");
+  show_help();
+
+  ESP_BT.begin("ESP chalet");
+
+  if (!SPIFFS.begin(true)) {
+    DL("***ERROR*** could not mount SPIFFS");
+  }
 
   BLEDevice::init("");
   pBLEScan = BLEDevice::getScan(); //create new scan
@@ -70,11 +124,46 @@ void setup() {
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
+  if (!scanInprogress && esp_timer_get_time() > nextScan) {
+    DL("Scanning started...");
+    scanInprogress = true;
+    pBLEScan->start(scanTime, &scanCompleted);
+  }
+
+  if (ESP_BT.available()) {
+    char in = (char)ESP_BT.read();
+    DF("bluetooth: %c\n", in);
+  }
+
   // https://github.com/moononournation/Arduino_BLE_Scanner/blob/master/Arduino_BLE_Scanner.ino
-  numOfDevices = 0;
-  BLEScanResults foundDevices = pBLEScan->start(scanTime, false);
-  DF("numOfDevices: %d\n", numOfDevices);
+  if (Serial.available()) {
+    char in = (char)Serial.read();
+    if (in == 'k') {
+      keepalive = !keepalive;
+      DF("keepalive toggled (%d)", keepalive);
+    } else if (in == 'h') {
+      show_help();
+    } else if (in == 's') {
+      scanInprogress = false;
+      nextScan = 0;
+    } else if (in == 'l') {
+      File log = SPIFFS.open(LOG);
+      if (!log) {
+        DL("***ERROR*** Unable to open SPIFFS file");
+      } else {
+        while (log.available()) {
+          Serial.write(log.read());
+        }
+      }
+      log.close();
+    } else if (in == 'd') {
+      if ( !SPIFFS.remove(LOG)) {
+        DL("***ERROR*** Unable to remove SPIFFS file");
+      } else {
+        DL("SPIFFS file deleted");
+      }
+    }
+  }
   /*
   int count = foundDevices.getCount();
   DF("\n***** Devices found: %i\n", count);
@@ -111,11 +200,8 @@ void loop() {
   }
   */
 
+  /*
   pBLEScan->clearResults();   // delete results fromBLEScan buffer to release memory
 
-  // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/DeepSleep/TimerWakeUp/TimerWakeUp.ino
-  esp_sleep_enable_timer_wakeup(5*uS_TO_S_FACTOR);
-  DL("going to sleep");
-  Serial.flush();
-  esp_deep_sleep_start();
+  */
 }
