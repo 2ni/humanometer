@@ -10,8 +10,6 @@
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 
-#include <BluetoothSerial.h>
-
 #include <WiFi.h>
 
 #define uS_TO_S_FACTOR 1000000
@@ -19,8 +17,6 @@
 
 int scanTime = 10;
 BLEScan* pBLEScan;
-
-BluetoothSerial ESP_BT;
 
 static bool keepalive = false;
 uint64_t nextScan = 0;
@@ -109,8 +105,6 @@ void setup() {
   DL("\n");
   show_help();
 
-  ESP_BT.begin("ESP chalet");
-
   if (!SPIFFS.begin(true)) {
     DL("***ERROR*** could not mount SPIFFS");
   }
@@ -128,11 +122,6 @@ void loop() {
     DL("Scanning started...");
     scanInprogress = true;
     pBLEScan->start(scanTime, &scanCompleted);
-  }
-
-  if (ESP_BT.available()) {
-    char in = (char)ESP_BT.read();
-    DF("bluetooth: %c\n", in);
   }
 
   // https://github.com/moononournation/Arduino_BLE_Scanner/blob/master/Arduino_BLE_Scanner.ino
