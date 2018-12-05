@@ -79,7 +79,9 @@ void scanCompleted(BLEScanResults foundDevices) {
     DL("***ERROR*** Could not open SPIFFS file to append");
   }
 
-  if (!log.println(num)) {
+  char l[5] = "";
+  sprintf(l, "%u;", num);
+  if (!log.print(l)) {
     DL("***ERROR*** Could not append line to SPIFFS file");
   }
 
@@ -143,6 +145,7 @@ void loop() {
         while (log.available()) {
           Serial.write(log.read());
         }
+        DL();
       }
       log.close();
     } else if (in == 'd') {
