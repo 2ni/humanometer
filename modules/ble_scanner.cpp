@@ -92,10 +92,10 @@ void scanCompleted(BLEScanResults foundDevices) {
     Serial.flush();
     esp_deep_sleep_start();
   }
-  scanInprogress = false;
   uint64_t now = esp_timer_get_time();
   nextScan = now+INTERVALL*uS_TO_S_FACTOR;
   // DF("current: %llu, next: %llu\n", now, nextScan);
+  scanInprogress = false;
 }
 
 void setup() {
@@ -119,8 +119,8 @@ void setup() {
 
 void loop() {
   if (!scanInprogress && esp_timer_get_time() > nextScan) {
-    DL("Scanning started...");
     scanInprogress = true;
+    DL("Scanning started...");
     pBLEScan->start(scanTime, &scanCompleted);
   }
 
@@ -129,7 +129,7 @@ void loop() {
     char in = (char)Serial.read();
     if (in == 'k') {
       keepalive = !keepalive;
-      DF("keepalive toggled (%d)", keepalive);
+      DF("keepalive toggled (%d)\n", keepalive);
     } else if (in == 'h') {
       show_help();
     } else if (in == 's') {
