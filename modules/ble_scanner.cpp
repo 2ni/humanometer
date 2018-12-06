@@ -12,15 +12,29 @@
 
 #include <WiFi.h>
 
-#define uS_TO_S_FACTOR 1000000
-#define INTERVALL 120 // in sec
+#define SDA 21
+#define SCL 22
+#include <Wire.h>
+#include "SSD1306Wire.h"
 
-int scanTime = 10;
+SSD1306Wire display(0x3c, SDA, SCL);
+
+#define uS_TO_S_FACTOR 1000000
+#define INTERVALL 30 // in sec
+
+int scanTime = 5;
 BLEScan* pBLEScan;
 
 static bool keepalive = false;
 uint64_t nextScan = 0;
-bool scanInprogress = false;
+
+enum states {
+  SCANNING,  // scan in progress
+  COMPLETED, // scan completed
+  IDLING // waiting
+};
+
+enum states state;
 
 const char* LOG = "/bluetooth.txt";
 
@@ -31,6 +45,7 @@ void show_help() {
   DL("s - start scan");
   DL("l - show log");
   DL("d - delete log");
+  DL("r - reset");
   DL("*************************************");
   DL();
 }
@@ -70,34 +85,18 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 };
 
+void updateScreen(uint16_t value) {
+  display.clear();
+  display.setFont(ArialMT_Plain_24);
+  display.setTextAlignment(TEXT_ALIGN_CENTER); // coords define center of text
+  display.drawString(64, 20, String(value));
+  display.display();
+}
+
+uint16_t numDevices = 0;
 void scanCompleted(BLEScanResults foundDevices) {
-  uint16_t num = foundDevices.getCount();
-  DF("Scan completed. %d devices found\n\n", num);
-
-  File log = SPIFFS.open(LOG, FILE_APPEND);
-  if (!log) {
-    DL("***ERROR*** Could not open SPIFFS file to append");
-  }
-
-  char l[5] = "";
-  sprintf(l, "%u;", num);
-  if (!log.print(l)) {
-    DL("***ERROR*** Could not append line to SPIFFS file");
-  }
-
-  log.close();
-
-  if (!keepalive) {
-    // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/DeepSleep/TimerWakeUp/TimerWakeUp.ino
-    esp_sleep_enable_timer_wakeup(INTERVALL*uS_TO_S_FACTOR);
-    DF("going to sleep %u seconds\n", INTERVALL);
-    Serial.flush();
-    esp_deep_sleep_start();
-  }
-  uint64_t now = esp_timer_get_time();
-  nextScan = now+INTERVALL*uS_TO_S_FACTOR;
-  // DF("current: %llu, next: %llu\n", now, nextScan);
-  scanInprogress = false;
+  numDevices = foundDevices.getCount();
+  state = COMPLETED;
 }
 
 void setup() {
@@ -105,11 +104,23 @@ void setup() {
   WiFi.mode(WIFI_OFF);
   Serial.begin(115200);
   DL("\n");
+
+  state = IDLING;
+
   show_help();
 
   if (!SPIFFS.begin(true)) {
     DL("***ERROR*** could not mount SPIFFS");
   }
+
+  // 128x64 (x y)
+  display.init();
+  display.flipScreenVertically();
+  display.setFont(ArialMT_Plain_16);
+  display.setTextAlignment(TEXT_ALIGN_CENTER); // coords define center of text
+  display.drawString(64, 24, "Humanometer");
+  display.drawHorizontalLine(10, 42, 108);
+  display.display();
 
   BLEDevice::init("");
   pBLEScan = BLEDevice::getScan(); //create new scan
@@ -120,10 +131,53 @@ void setup() {
 }
 
 void loop() {
-  if (!scanInprogress && esp_timer_get_time() > nextScan) {
-    scanInprogress = true;
-    DL("Scanning started...");
-    pBLEScan->start(scanTime, &scanCompleted);
+  switch (state) {
+    case IDLING:
+      if (esp_timer_get_time() > nextScan) {
+        state = SCANNING;
+        DL("Scanning...");
+        pBLEScan->start(scanTime, &scanCompleted);
+
+        display.clear();
+        display.setFont(ArialMT_Plain_16);
+        display.setTextAlignment(TEXT_ALIGN_CENTER); // coords define center of text
+        display.drawString(64, 24, "Scanning...");
+        display.display();
+      }
+      break;
+    case COMPLETED:
+      DF("Scan completed. %d devices found\n\n", numDevices);
+      updateScreen(numDevices);
+
+      // write to file
+      File log = SPIFFS.open(LOG, FILE_APPEND);
+      if (!log) {
+        DL("***ERROR*** Could not open SPIFFS file to append");
+      }
+
+      char l[5] = "";
+      sprintf(l, "%u;", numDevices);
+      if (!log.print(l)) {
+        DL("***ERROR*** Could not append line to SPIFFS file");
+      }
+
+      log.close();
+
+      // deep sleep
+      if (!keepalive) {
+        // https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/DeepSleep/TimerWakeUp/TimerWakeUp.ino
+        esp_sleep_enable_timer_wakeup(INTERVALL*uS_TO_S_FACTOR);
+        DF("sleep %u sec\n", INTERVALL);
+        Serial.flush();
+        esp_deep_sleep_start();
+      }
+
+      uint64_t now = esp_timer_get_time();
+      nextScan = now+INTERVALL*uS_TO_S_FACTOR;
+      // DF("current: %llu, next: %llu\n", now, nextScan);
+
+      state = IDLING;
+      break;
   }
 
   // https://github.com/moononournation/Arduino_BLE_Scanner/blob/master/Arduino_BLE_Scanner.ino
@@ -135,7 +189,7 @@ void loop() {
     } else if (in == 'h') {
       show_help();
     } else if (in == 's') {
-      scanInprogress = false;
+      state = IDLING;
       nextScan = 0;
     } else if (in == 'l') {
       File log = SPIFFS.open(LOG);
@@ -154,6 +208,8 @@ void loop() {
       } else {
         DL("SPIFFS file deleted");
       }
+    } else if (in == 'r') {
+      ESP.restart();
     }
   }
   /*
